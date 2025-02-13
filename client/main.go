@@ -9,108 +9,81 @@ import (
 	"os/signal"
 	"syscall"
 
+	"tunelo"
 	"tunelo/pkg/logger/plain"
 )
 
 func main() {
 	var serverIP string
 	var serverPort string
-	var vpnPort string
-	var clientPort string
+	var vpnListenPort string
+	var vpnEndpointPort string
 	var protocol string
 	var serverDomain string
 
 	flag.StringVar(&serverIP, "server_ip", "127.0.0.1", "Remote proxy-server IP address.")
-	flag.StringVar(&serverPort, "server_port", "23230", "Remote proxy-server port number.")
-	flag.StringVar(&vpnPort, "vpn_port", "23233", "Local VPN port number.")
-	flag.StringVar(&clientPort, "client_port", "23231", "Client port number.")
+	flag.StringVar(&serverPort, "server_port", "11821", "Remote proxy-server port number.")
+	flag.StringVar(&vpnEndpointPort, "vpn_endpoint_port", "11820", "VPN endpoint port number.")
+	flag.StringVar(&vpnListenPort, "vpn_listen_port", "0", "VPN listen port number.")
 	flag.StringVar(&protocol, "p", "ws", "Tunnel transport protocol. Options: ws, utls, and tcp.")
 	flag.StringVar(&serverDomain, "server_domain", "", "Server domain.")
 	flag.Parse()
 
 	logger := plain.New()
 
-	clientAddr := net.JoinHostPort("127.0.0.1", clientPort)
-	clientUDPAddr, err := net.ResolveUDPAddr("udp", clientAddr)
+	vpnEndpointUDPConn, err := tunelo.CreateUDPListenConn(vpnEndpointPort)
 	if err != nil {
-		logger.Error(fmt.Errorf("error resolving client udp addr: %v", err), nil)
+		logger.Error(fmt.Errorf("error creating vpn endpoint udp listen conn: %v", err), nil)
 		os.Exit(1)
 	}
+	defer vpnEndpointUDPConn.Close()
+	logger.Info(fmt.Sprintf("VPN endpoint udp listen conn: %s", vpnEndpointUDPConn.LocalAddr().String()), nil)
 
-	clientUDPConn, err := net.ListenUDP("udp", clientUDPAddr)
-	if err != nil {
-		logger.Error(fmt.Errorf("error creating client udp listener: %v", err), nil)
-		os.Exit(1)
-	}
-	defer func(c *net.UDPConn) {
-		err := c.Close()
+	var vpnListenUDPConn *net.UDPConn = nil
+	if vpnListenPort != "0" {
+		vpnListenUDPConn, err := tunelo.CreateUDPListenConn(vpnListenPort)
 		if err != nil {
-			logger.Error(fmt.Errorf("error closing client udp connection: %v", err), nil)
+			logger.Error(fmt.Errorf("error creating vpn listen udp conn: %v", err), nil)
+			os.Exit(1)
 		}
-	}(clientUDPConn)
-
-	logger.Info(fmt.Sprintf("UDP conn: %s", clientAddr), nil)
-
-	vpnAddr := net.JoinHostPort("127.0.0.1", vpnPort)
-	vpnUDPAddr, err := net.ResolveUDPAddr("udp", vpnAddr)
-	if err != nil {
-		logger.Error(fmt.Errorf("error resolving vpn udp addr: %v", err), nil)
-		os.Exit(1)
+		defer vpnListenUDPConn.Close()
+		logger.Info(fmt.Sprintf("VPN listen udp conn: %s", vpnListenUDPConn.LocalAddr().String()), nil)
 	}
-
-	localUDPAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:")
-	if err != nil {
-		logger.Error(fmt.Errorf("error resolving local udp addr: %v", err), nil)
-		os.Exit(1)
-	}
-
-	vpnConn, err := net.DialUDP("udp", localUDPAddr, vpnUDPAddr)
-	if err != nil {
-		logger.Error(fmt.Errorf("error dialling vpn: %v", err), nil)
-		os.Exit(1)
-	}
-	defer func(c *net.UDPConn) {
-		err := c.Close()
-		if err != nil {
-			logger.Error(fmt.Errorf("error closing vpn connection: %v", err), nil)
-		}
-	}(vpnConn)
-
-	logger.Info(fmt.Sprintf("VPN UDP conn: %s", vpnAddr), nil)
 
 	serverAddr := net.JoinHostPort(serverIP, serverPort)
 
 	switch protocol {
-	case "utls":
-		t := utlsTransport{
-			serverDomain:  serverDomain,
-			serverAddr:    serverAddr,
-			vpnConn:       vpnConn,
-			clientUDPConn: clientUDPConn,
-			logger:        logger,
-		}
-		err := t.run()
-		if err != nil {
-			logger.Error(err, nil)
-			os.Exit(1)
-		}
 	case "tcp":
 		t := tcpTransport{
-			serverAddr:    serverAddr,
-			vpnConn:       vpnConn,
-			clientUDPConn: clientUDPConn,
-			logger:        logger,
+			serverAddr:         serverAddr,
+			vpnListenUDPConn:   vpnListenUDPConn,
+			vpnEndpointUDPConn: vpnEndpointUDPConn,
+			logger:             logger,
 		}
 		err := t.run()
 		if err != nil {
 			logger.Error(err, nil)
 			os.Exit(1)
 		}
+	case "utls":
+		t := utlsTransport{
+			serverDomain:       serverDomain,
+			serverAddr:         serverAddr,
+			vpnEndpointUDPConn: vpnEndpointUDPConn,
+			vpnListenUDPConn:   vpnListenUDPConn,
+			logger:             logger,
+		}
+		err := t.run()
+		if err != nil {
+			logger.Error(err, nil)
+			os.Exit(1)
+		}
+
 	default:
 		t := wsTransport{
 			serverAddr:    serverAddr,
-			vpnConn:       vpnConn,
-			clientUDPConn: clientUDPConn,
+			vpnConn:       vpnListenUDPConn,
+			clientUDPConn: vpnEndpointUDPConn,
 			logger:        logger,
 		}
 		err := t.run()

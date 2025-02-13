@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+
 	"nhooyr.io/websocket"
 
 	"tunelo/pkg/logger"
@@ -12,7 +13,7 @@ import (
 
 type wsTransport struct {
 	serverAddr string
-	vpnConn    *net.UDPConn
+	vpnUDPAddr *net.UDPAddr
 	logger     logger.Logger
 }
 
@@ -46,15 +47,45 @@ func (t *wsTransport) handler(w http.ResponseWriter, r *http.Request) {
 
 	t.logger.Info("ws connection accepted. Tunneling...", nil)
 
-	go func() {
-		_, err := io.Copy(t.vpnConn, wsNetConn)
+	localUDPAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:")
+	if err != nil {
+		t.logger.Error(fmt.Errorf("error resolving local udp addr: %v", err), nil)
+		return
+	}
+
+	vpnConn, err := net.DialUDP("udp", localUDPAddr, t.vpnUDPAddr)
+	if err != nil {
+		t.logger.Error(fmt.Errorf("error dialling vpn: %v", err), nil)
+		return
+	}
+	defer func(c *net.UDPConn) {
+		err := c.Close()
 		if err != nil {
-			t.logger.Error(fmt.Errorf("error copying data: %v", err), nil)
+			t.logger.Error(fmt.Errorf("error closing udp conn: %v", err), nil)
+		}
+	}(vpnConn)
+	t.logger.Info("udp connection established. Tunneling...", nil)
+
+	go t.handle(wsNetConn, vpnConn)
+}
+
+func (t *wsTransport) handle(conn net.Conn, vpnConn *net.UDPConn) {
+	defer func(conn net.Conn) {
+		err := conn.Close()
+		if err != nil {
+			t.logger.Error(fmt.Errorf("error closing ws conn: %v", err), nil)
+		}
+	}(conn)
+
+	go func() {
+		_, err := io.Copy(vpnConn, conn)
+		if err != nil {
+			t.logger.Error(fmt.Errorf("error copying from ws conn to vpn: %v", err), nil)
 		}
 	}()
 
-	_, err = io.Copy(wsNetConn, t.vpnConn)
+	_, err := io.Copy(conn, vpnConn)
 	if err != nil {
-		t.logger.Error(fmt.Errorf("error copying data: %v", err), nil)
+		t.logger.Error(fmt.Errorf("error copying from vpn to ws conn: %v", err), nil)
 	}
 }

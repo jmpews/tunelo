@@ -11,11 +11,11 @@ import (
 )
 
 type utlsTransport struct {
-	serverDomain  string
-	serverAddr    string
-	vpnConn       *net.UDPConn
-	clientUDPConn *net.UDPConn
-	logger        logger.Logger
+	serverDomain       string
+	serverAddr         string
+	vpnListenUDPConn   *net.UDPConn
+	vpnEndpointUDPConn *net.UDPConn
+	logger             logger.Logger
 }
 
 func (t *utlsTransport) run() error {
@@ -49,21 +49,21 @@ func (t *utlsTransport) run() error {
 	t.logger.Info("tls connected. Tunneling...", nil)
 
 	go func() {
-		_, err := io.Copy(tlsConn, t.clientUDPConn)
+		_, err := io.Copy(tlsConn, t.vpnEndpointUDPConn)
 		if err != nil {
 			t.logger.Error(fmt.Errorf("error copying from client to tls conn: %v", err), nil)
 		}
 	}()
 
 	go func() {
-		_, err := io.Copy(t.vpnConn, tlsConn)
+		_, err := io.Copy(t.vpnListenUDPConn, tlsConn)
 		if err != nil {
 			t.logger.Error(fmt.Errorf("error copying from tls conn to vpn: %v", err), nil)
 		}
 	}()
 
 	go func() {
-		_, err := io.Copy(tlsConn, t.vpnConn)
+		_, err := io.Copy(tlsConn, t.vpnListenUDPConn)
 		if err != nil {
 			t.logger.Error(fmt.Errorf("error copying from vpn to tls conn: %v", err), nil)
 		}
